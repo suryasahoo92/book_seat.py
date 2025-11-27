@@ -1,0 +1,41 @@
+name: Auto Seat Booking
+
+on:
+  schedule:
+    - cron: "30 6 * * *"   # Runs every day at 6:30 UTC (12 PM IST)
+  workflow_dispatch:       # Allow manual run
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v3
+
+    - name: Install Chrome
+      run: |
+        sudo apt update
+        sudo apt install -y wget gnupg
+        wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
+        echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google.list
+        sudo apt update
+        sudo apt install -y google-chrome-stable
+
+    - name: Install Python Dependencies
+      run: |
+        pip install selenium
+
+    - name: Install ChromeDriver
+      run: |
+        CHROME_VERSION=$(google-chrome --version | awk '{print $3}' | cut -d '.' -f 1)
+        DRIVER_VERSION=$(wget -qO- "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_$CHROME_VERSION")
+        wget https://chromedriver.storage.googleapis.com/$DRIVER_VERSION/chromedriver_linux64.zip
+        sudo unzip chromedriver_linux64.zip -d /usr/local/bin/
+
+    - name: Run Booking Script
+      env:
+        FLOWSCAPE_USER: ${{ secrets.FLOWSCAPE_USER }}
+        FLOWSCAPE_PASS: ${{ secrets.FLOWSCAPE_PASS }}
+      run: |
+        python book_seat.py
