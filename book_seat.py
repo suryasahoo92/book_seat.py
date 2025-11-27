@@ -10,7 +10,7 @@ USERNAME = os.getenv("FLOWSCAPE_USER")
 PASSWORD = os.getenv("FLOWSCAPE_PASS")
 
 # Seat ID or seat name (update as per your Flowscape UI)
-SEAT_NAME = "Desk A-15"
+SEAT_NAME = "M2-6F-278"
 
 # Calculate date 4 days from today
 booking_date = (datetime.now() + timedelta(days=4)).strftime("%Y-%m-%d")
@@ -24,7 +24,7 @@ driver = webdriver.Chrome(options=chrome_options)
 
 try:
     # Go to Flowscape login page
-    driver.get("https://your.flowscape.url/login")
+    driver.get("https://central-prod.flowscape.se/login/realm")
 
     time.sleep(2)
 
@@ -39,7 +39,7 @@ try:
     time.sleep(4)
 
     # Navigate to workspace booking page
-    driver.get("https://your.flowscape.url/workspaces")
+    driver.get("https://wsp.flowscape.se/webapp/")
     time.sleep(3)
 
     # Pick the seat from list
