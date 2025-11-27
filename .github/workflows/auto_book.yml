@@ -15,14 +15,37 @@ jobs:
 
     - name: Install ChromeDriver
       run: |
+        set -euo pipefail
+        set -x
+    
+        # Get Chrome major version
         CHROME_VERSION=$(google-chrome --version | awk '{print $3}' | cut -d '.' -f 1)
-        DRIVER_VERSION=$(wget -qO- "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_$CHROME_VERSION")
-        wget -O chromedriver_linux64.zip https://chromedriver.storage.googleapis.com/$DRIVER_VERSION/chromedriver_linux64.zip
-        if ! unzip -tq chromedriver_linux64.zip; then
-          echo "ERROR: chromedriver_linux64.zip is invalid!"
+        echo "Chrome major version: $CHROME_VERSION"
+    
+        # Query matching chromedriver version (fail if not found)
+        DRIVER_VERSION=$(curl -fsSL "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_${CHROME_VERSION}" || true)
+        if [ -z "$DRIVER_VERSION" ]; then
+          echo "ERROR: No chromedriver release found for Chrome major version ${CHROME_VERSION}" >&2
           exit 1
         fi
-        sudo unzip chromedriver_linux64.zip -d /usr/local/bin/
+        echo "Chromedriver release: $DRIVER_VERSION"
+    
+        # Download and validate the zip (curl -f will fail on HTTP errors)
+        URL="https://chromedriver.storage.googleapis.com/${DRIVER_VERSION}/chromedriver_linux64.zip"
+        echo "Downloading: $URL"
+        curl -fSLo chromedriver_linux64.zip "$URL"
+    
+        # Quick list/test the archive before extracting
+        unzip -l chromedriver_linux64.zip
+        if ! unzip -tq chromedriver_linux64.zip; then
+          echo "ERROR: chromedriver_linux64.zip is not a valid zip archive" >&2
+          exit 1
+        fi
+    
+        # Extract and set permissions
+        sudo unzip -o chromedriver_linux64.zip -d /usr/local/bin/
+        sudo chmod +x /usr/local/bin/chromedriver
+        which chromedriver || ls -la /usr/local/bin/chromedriver
 
     - name: Install Python Dependencies
       run: |
