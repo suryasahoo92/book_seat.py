@@ -13,14 +13,16 @@ jobs:
     - name: Checkout Code
       uses: actions/checkout@v3
 
-    - name: Install Chrome
+    - name: Install ChromeDriver
       run: |
-        sudo apt update
-        sudo apt install -y wget gnupg
-        wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
-        echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google.list
-        sudo apt update
-        sudo apt install -y google-chrome-stable
+        CHROME_VERSION=$(google-chrome --version | awk '{print $3}' | cut -d '.' -f 1)
+        DRIVER_VERSION=$(wget -qO- "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_$CHROME_VERSION")
+        wget -O chromedriver_linux64.zip https://chromedriver.storage.googleapis.com/$DRIVER_VERSION/chromedriver_linux64.zip
+        if ! unzip -tq chromedriver_linux64.zip; then
+          echo "ERROR: chromedriver_linux64.zip is invalid!"
+          exit 1
+        fi
+        sudo unzip chromedriver_linux64.zip -d /usr/local/bin/
 
     - name: Install Python Dependencies
       run: |
