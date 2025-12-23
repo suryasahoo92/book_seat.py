@@ -10,7 +10,7 @@ USERNAME = os.getenv("FLOWSCAPE_USER")
 PASSWORD = os.getenv("FLOWSCAPE_PASS")
 
 # Seat ID or seat name (update as per your Flowscape UI)
-SEAT_NAME = "M2-6F-278"
+SEAT_NAME = "M2-6F-275"
 
 # Calculate date 4 days from today
 booking_date = (datetime.now() + timedelta(days=4)).strftime("%Y-%m-%d")
