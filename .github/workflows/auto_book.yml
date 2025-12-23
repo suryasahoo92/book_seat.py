@@ -25,7 +25,9 @@ jobs:
 
     - name: Install Python Dependencies
       run: |
-        pip install selenium  # Selenium Manager handles drivers automatically
+        python -m pip install --upgrade pip
+        # 2025 Standard: Use Selenium 4.27+ for better Chrome 143 compatibility
+        pip install selenium>=4.27.0 webdriver-manager
 
     - name: Run Booking Script
       env:
