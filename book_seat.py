@@ -15,13 +15,12 @@ SEAT_NAME = "M2-6F-278"
 # Calculate date 4 days from today
 booking_date = (datetime.now() + timedelta(days=4)).strftime("%Y-%m-%d")
 
-chrome_options = Options()
-chrome_options.add_argument("--headless=new")
-chrome_options.add_argument("--no-sandbox")
-chrome_options.add_argument("--disable-dev-shm-usage")
+options = Options()
+options.add_argument("--headless") # Required for GitHub Actions
+options.add_argument("--no-sandbox")
+options.add_argument("--disable-dev-shm-usage")
 
-driver = webdriver.Chrome(options=chrome_options)
-
+driver = webdriver.Chrome(options=options) 
 try:
     # Go to Flowscape login page
     driver.get("https://central-prod.flowscape.se/login/realm")
