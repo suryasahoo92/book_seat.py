@@ -25,7 +25,7 @@ options.add_argument("--window-size=1920,1080") # Helps prevent elements being "
 
 driver = webdriver.Chrome(options=options)
 try:
-    driver.get("YOUR_FLOWSCAPE_URL_HERE")
+    driver.get("https://wsp.flowscape.se/webapp/")
 
     # 2. Use Explicit Wait for the username field (Wait up to 20 seconds)
     wait = WebDriverWait(driver, 20)
