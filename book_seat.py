@@ -1,6 +1,8 @@
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 from datetime import datetime, timedelta
 import os
 import time
@@ -16,47 +18,30 @@ SEAT_NAME = "M2-6F-275"
 booking_date = (datetime.now() + timedelta(days=4)).strftime("%Y-%m-%d")
 
 options = Options()
-options.add_argument("--headless") # Required for GitHub Actions
+options.add_argument("--headless")
 options.add_argument("--no-sandbox")
 options.add_argument("--disable-dev-shm-usage")
+options.add_argument("--window-size=1920,1080") # Helps prevent elements being "hidden" off-screen
 
-driver = webdriver.Chrome(options=options) 
+driver = webdriver.Chrome(options=options)
 try:
-    # Go to Flowscape login page
-    driver.get("https://central-prod.flowscape.se/login/realm")
+    driver.get("YOUR_FLOWSCAPE_URL_HERE")
 
-    time.sleep(2)
+    # 2. Use Explicit Wait for the username field (Wait up to 20 seconds)
+    wait = WebDriverWait(driver, 20)
+    username_field = wait.until(EC.presence_of_element_located((By.ID, "username")))
+    
+    # 3. Proceed with login
+    username_field.send_keys("YOUR_USERNAME")
+    driver.find_element(By.ID, "password").send_keys("YOUR_PASSWORD")
+    driver.find_element(By.ID, "login-button-id").click() # Update this ID if it's different
 
-    # Enter username
-    driver.find_element(By.ID, "username").send_keys(USERNAME)
-
-    # Enter password
-    driver.find_element(By.ID, "password").send_keys(PASSWORD)
-
-    # Login button
-    driver.find_element(By.ID, "login").click()
-    time.sleep(4)
-
-    # Navigate to workspace booking page
-    driver.get("https://wsp.flowscape.se/webapp/")
-    time.sleep(3)
-
-    # Pick the seat from list
-    driver.find_element(By.XPATH, f"//div[contains(text(), '{SEAT_NAME}')]").click()
-    time.sleep(2)
-
-    # Select the date 4 days later
-    driver.find_element(By.XPATH, f"//button[@data-date='{booking_date}']").click()
-    time.sleep(2)
-
-    # Confirm booking
-    driver.find_element(By.XPATH, "//button[contains(text(), 'Book')]").click()
-
-    print("Seat booked successfully for:", booking_date)
+    print("Login successful!")
 
 except Exception as e:
-    print("Booking failed due to:", e)
-
+    print(f"Booking failed due to: {e}")
+    # Optional: Save a screenshot to debug what the script "saw"
+    driver.save_screenshot("error_screenshot.png")
 finally:
     driver.quit()
 
