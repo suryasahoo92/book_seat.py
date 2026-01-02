@@ -8,10 +8,11 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: selenium/standalone-chrome:latest
-      # if you prefer a specific version, use :116.0 or similar
+      options: --user root
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      # rest of steps...
 
       - name: Set up Python
         uses: actions/setup-python@v4
