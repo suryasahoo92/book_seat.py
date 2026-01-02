@@ -33,5 +33,6 @@ jobs:
       env:
         FLOWSCAPE_USER: ${{ secrets.FLOWSCAPE_USER }}
         FLOWSCAPE_PASS: ${{ secrets.FLOWSCAPE_PASS }}
+        FLOWSCAPE_URL: ${{ secrets.FLOWSCAPE_URL }}
       run: |
         python book_seat.py
