@@ -15,7 +15,7 @@ def login_flowscape(driver, email, password):
         # Note: Replace 'button-id' with the actual ID or text of that button
         microsoft_btn = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'Microsoft')]")))
         microsoft_btn.click()
-    except Exception as e:
+   except Exception as e:
         print(f"Booking failed: {e}")
 
     # Credentials stored as GitHub Action Secrets
@@ -37,24 +37,24 @@ def login_flowscape(driver, email, password):
     wait.until(EC.element_to_be_clickable((By.ID, "idSIButton9"))).click()
 
     # 5. Handle "Stay signed in?" prompt (Standard in 2025)
-try:
-    # Use the attribute you found (e.g., aria-label or title)
-    seat_identifier = "ID-6F-277 (UK)" 
-    
-    # 1. Locate the seat using a partial attribute match (most reliable)
-    # This finds the seat even if the text isn't visible on screen
-    my_seat = wait.until(EC.element_to_be_clickable(
-        (By.XPATH, f"//*[@aria-label='{seat_identifier}' or @title='{seat_identifier}']")
-    ))
-    
-    # 2. Click the seat (even if it's an SVG or Canvas element)
-    driver.execute_script("arguments[0].click();", my_seat) # Bypasses common 'obscured' errors
-    print(f"Successfully clicked {seat_identifier}")
-
-    # 3. Confirm the booking
-    confirm_btn = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'Confirm')]")))
-    confirm_btn.click()
-
-except Exception as e:
-    print(f"Failed to find the seat layout: {e}")
-    driver.save_screenshot("layout_error.png")
+   try:
+       # Use the attribute you found (e.g., aria-label or title)
+       seat_identifier = "ID-6F-277 (UK)" 
+       
+       # 1. Locate the seat using a partial attribute match (most reliable)
+       # This finds the seat even if the text isn't visible on screen
+       my_seat = wait.until(EC.element_to_be_clickable(
+           (By.XPATH, f"//*[@aria-label='{seat_identifier}' or @title='{seat_identifier}']")
+       ))
+       
+       # 2. Click the seat (even if it's an SVG or Canvas element)
+       driver.execute_script("arguments[0].click();", my_seat) # Bypasses common 'obscured' errors
+       print(f"Successfully clicked {seat_identifier}")
+   
+       # 3. Confirm the booking
+       confirm_btn = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'Confirm')]")))
+       confirm_btn.click()
+   
+   except Exception as e:
+       print(f"Failed to find the seat layout: {e}")
+       driver.save_screenshot("layout_error.png")
