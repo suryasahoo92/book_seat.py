@@ -3,6 +3,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium import webdriver
 from selenium.common.exceptions import WebDriverException
+from selenium.webdriver.chrome.service import Service
 import logging
 import os
 import time
@@ -10,6 +11,7 @@ import traceback
 import sys
 import argparse
 from datetime import datetime
+import shutil
 
 LOG_FILENAME = os.getenv("FLOWSCAPE_LOG", "booking.log")
 
@@ -446,9 +448,11 @@ def login_flowscape(driver, email=None, password=None, seat_identifier="ID-6F-27
 def make_driver(headless=True, enable_console_logs=True):
     """
     Create a Chrome WebDriver with optional browser console logging enabled.
+    Uses Selenium 4+ style (Service + options) and sets logging prefs on options.
     """
     options = webdriver.ChromeOptions()
     if headless:
+        # use new headless mode flag where available
         options.add_argument("--headless=new")
         options.add_argument("--disable-gpu")
     options.add_argument("--no-sandbox")
@@ -456,13 +460,32 @@ def make_driver(headless=True, enable_console_logs=True):
     # Ensure window-size so screenshots look consistent
     options.add_argument("--window-size=1920,1080")
 
-    caps = webdriver.DesiredCapabilities.CHROME.copy()
+    # Enable browser console logs (Chrome) via capabilities set on options
     if enable_console_logs:
-        caps["goog:loggingPrefs"] = {"browser": "ALL"}
+        try:
+            options.set_capability("goog:loggingPrefs", {"browser": "ALL"})
+        except Exception:
+            # fallback: older selenium might still accept desired_capabilities but we prefer set_capability
+            pass
+
+    # Find chromedriver from PATH if available
+    chromedriver_path = shutil.which("chromedriver")
+    service = Service(executable_path=chromedriver_path) if chromedriver_path else Service()
+
     try:
-        driver = webdriver.Chrome(desired_capabilities=caps, options=options)
+        driver = webdriver.Chrome(service=service, options=options)
         logging.info("Launched Chrome WebDriver (headless=%s)", headless)
         return driver
+    except TypeError as e:
+        # back-compat fallback: try without service argument (some environments)
+        logging.warning("webdriver.Chrome(service=..., options=...) failed: %s. Retrying without service.", e)
+        try:
+            driver = webdriver.Chrome(options=options)
+            logging.info("Launched Chrome WebDriver (fallback without service) (headless=%s)", headless)
+            return driver
+        except Exception as ex:
+            logging.exception("Failed to launch Chrome WebDriver in fallback: %s", ex)
+            raise
     except WebDriverException as e:
         logging.exception("Failed to launch Chrome WebDriver: %s", e)
         raise
