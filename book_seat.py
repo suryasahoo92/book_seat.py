@@ -159,7 +159,7 @@ def _find_time_input_within(driver, container):
     return result
 
 
-def login_flowscape(driver, email=None, password=None, seat_identifier="ID-6F-277 (UK)", debug=True):
+def login_flowscape(driver, email=None, password=None, seat_identifier="ID-6F-280 (UK)", debug=True):
     """
     Full flow with extensive logging and state dumps. Returns True on success.
     """
