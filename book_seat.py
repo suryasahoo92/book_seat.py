@@ -1,31 +1,83 @@
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium import webdriver
+from selenium.common.exceptions import WebDriverException
+import logging
 import os
 import time
 import traceback
+import sys
+import argparse
+from datetime import datetime
+
+LOG_FILENAME = os.getenv("FLOWSCAPE_LOG", "booking.log")
+
+
+def setup_logging(debug: bool):
+    level = logging.DEBUG if debug else logging.INFO
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)s %(message)s",
+        handlers=[
+            logging.FileHandler(LOG_FILENAME, mode="w", encoding="utf-8"),
+            logging.StreamHandler(sys.stdout),
+        ],
+    )
+    logging.info("Logging initialized. Debug=%s", debug)
 
 
 def _safe_screenshot(driver, name):
     try:
         driver.save_screenshot(name)
-        print(f"Saved screenshot: {name}")
-    except Exception:
-        pass
+        logging.debug("Saved screenshot: %s", name)
+    except Exception as e:
+        logging.debug("Unable to save screenshot %s: %s", name, e)
 
 
 def _write_file(name, content):
     try:
         with open(name, "w", encoding="utf-8") as f:
             f.write(content)
-        print(f"Wrote file: {name}")
+        logging.debug("Wrote file: %s", name)
     except Exception as e:
-        print(f"Failed writing file {name}: {e}")
+        logging.debug("Failed writing file %s: %s", name, e)
+
+
+def _dump_page_state(driver, prefix):
+    """
+    Save page_source, screenshot and browser console logs (if available).
+    """
+    try:
+        _safe_screenshot(driver, f"{prefix}.png")
+    except Exception:
+        pass
+    try:
+        _write_file(f"{prefix}.html", driver.page_source)
+    except Exception:
+        pass
+    # browser console logs (Chrome/Chromium)
+    try:
+        logs = []
+        for entry in driver.get_log("browser"):
+            logs.append(f"{entry.get('level')} {entry.get('source', '')} {entry.get('message')}")
+        _write_file(f"{prefix}_browser_console.log", "\n".join(logs))
+    except Exception:
+        logging.debug("No browser console logs available or get_log failed.")
+
+
+def _log_exception(step_name: str, exc: Exception, driver=None):
+    logging.exception("Exception during %s: %s", step_name, exc)
+    try:
+        suffix = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        _dump_page_state(driver, f"error_{step_name}_{suffix}") if driver is not None else None
+    except Exception:
+        logging.debug("Failed dumping page state for %s", step_name)
 
 
 def _set_input_value(driver, element, value):
     """
-    Robustly set value for an input element: try clear/send_keys, fall back to JS value set + events, then blur.
+    Robustly set value for an input element: try clear/send_keys, fall back to JS set+events.
     """
     try:
         element.clear()
@@ -33,7 +85,6 @@ def _set_input_value(driver, element, value):
         pass
     try:
         element.send_keys(value)
-        # some inputs require Enter to commit
         try:
             element.send_keys("\n")
         except Exception:
@@ -42,7 +93,6 @@ def _set_input_value(driver, element, value):
     except Exception:
         pass
 
-    # JS fallback: set value and dispatch input/change/blur events
     try:
         driver.execute_script(
             "arguments[0].value = arguments[1];"
@@ -57,73 +107,9 @@ def _set_input_value(driver, element, value):
         return False
 
 
-def _dump_modal_state(driver, modal, prefix="debug"):
-    """
-    Save modal outerHTML, page source, list of candidate inputs/buttons and their attributes.
-    """
-    try:
-        # full page after seat click
-        try:
-            page_source = driver.page_source
-            _write_file(f"{prefix}_page_after_click.html", page_source)
-        except Exception:
-            pass
-
-        # outerHTML of modal if present
-        if modal is not None:
-            try:
-                outer = driver.execute_script("return arguments[0].outerHTML;", modal)
-                _write_file(f"{prefix}_modal.html", outer)
-            except Exception:
-                pass
-
-        # list candidate inputs/buttons in modal or globally
-        lines = []
-        lines.append(f"Window handles: {driver.window_handles}\nCurrent URL: {driver.current_url}\n")
-        try:
-            # find inputs and buttons near modal
-            elems = []
-            if modal is not None:
-                elems = modal.find_elements(By.XPATH, ".//input | .//button | .//div | .//span | .//label")
-            else:
-                elems = driver.find_elements(By.XPATH, "//input | //button | //div | //span | //label")
-
-            # limit amount
-            for i, e in enumerate(elems[:400]):
-                try:
-                    tag = e.tag_name
-                    text = e.text or ""
-                    aria = e.get_attribute("aria-label") or ""
-                    role = e.get_attribute("role") or ""
-                    cls = e.get_attribute("class") or ""
-                    idattr = e.get_attribute("id") or ""
-                    name = e.get_attribute("name") or ""
-                    placeholder = e.get_attribute("placeholder") or ""
-                    value = e.get_attribute("value") or ""
-                    displayed = e.is_displayed()
-                    enabled = e.is_enabled()
-                    outer = ""
-                    try:
-                        outer = driver.execute_script("return arguments[0].outerHTML;", e)
-                    except Exception:
-                        pass
-                    lines.append(
-                        f"#{i} tag={tag} displayed={displayed} enabled={enabled} text={text!r} aria={aria!r} role={role!r} id={idattr!r} name={name!r} class={cls!r} placeholder={placeholder!r} value={value!r}\nouterHTML={outer[:4000]}\n---\n"
-                    )
-                except Exception:
-                    continue
-        except Exception as e:
-            lines.append("Failed enumerating elements: " + str(e) + "\n" + traceback.format_exc())
-
-        _write_file(f"{prefix}_elements.txt", "\n".join(lines))
-    except Exception as e:
-        print("Error during modal dump: ", e)
-
-
 def _find_time_input_within(driver, container):
     """
-    Return dict with 'start' and 'end' input elements if found, else None.
-    Tries several common selectors (aria-label, placeholder, label text, input[type=time]).
+    Return dict with 'start' and 'end' input elements if found, else None entries.
     """
     result = {"start": None, "end": None}
     base = "." if container is not None else ""
@@ -138,28 +124,28 @@ def _find_time_input_within(driver, container):
         f"{base}//label[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'end')]/following::input[1]",
     ]
 
-    for xp in start_xpaths:
-        try:
+    try:
+        for xp in start_xpaths:
             elems = container.find_elements(By.XPATH, xp) if container is not None else driver.find_elements(By.XPATH, xp)
             if elems:
                 result["start"] = elems[0]
                 break
-        except Exception:
-            continue
+    except Exception:
+        pass
 
-    for xp in end_xpaths:
-        try:
+    try:
+        for xp in end_xpaths:
             elems = container.find_elements(By.XPATH, xp) if container is not None else driver.find_elements(By.XPATH, xp)
             if elems:
                 result["end"] = elems[0]
                 break
-        except Exception:
-            continue
+    except Exception:
+        pass
 
-    # fallback: pick first two inputs[type=time]
+    # fallback: first two input[type=time]
     try:
-        if (not result["start"] or not result["end"]) and container is not None:
-            time_inputs = container.find_elements(By.XPATH, ".//input[@type='time']")
+        if (not result["start"] or not result["end"]):
+            time_inputs = (container.find_elements(By.XPATH, ".//input[@type='time']") if container is not None else driver.find_elements(By.XPATH, "//input[@type='time']"))
             if len(time_inputs) >= 2:
                 if not result["start"]:
                     result["start"] = time_inputs[0]
@@ -168,110 +154,126 @@ def _find_time_input_within(driver, container):
     except Exception:
         pass
 
-    if (not result["start"] or not result["end"]) and container is None:
-        try:
-            time_inputs = driver.find_elements(By.XPATH, "//input[@type='time']")
-            if len(time_inputs) >= 2:
-                if not result["start"]:
-                    result["start"] = time_inputs[0]
-                if not result["end"]:
-                    result["end"] = time_inputs[1]
-        except Exception:
-            pass
-
     return result
 
 
-def login_flowscape(driver, email=None, password=None, debug=False):
+def login_flowscape(driver, email=None, password=None, seat_identifier="ID-6F-277 (UK)", debug=True):
     """
-    Logs into Flowscape via Microsoft and attempts to book a seat.
-    If email/password are not provided, falls back to FLOWSCAPE_USER and FLOWSCAPE_PASS environment variables.
-    Set debug=True to produce detailed dumps (modal.html, page_after_click.html, elements.txt and screenshots).
-    Returns True on success, False on failure.
+    Full flow with extensive logging and state dumps. Returns True on success.
     """
+    wait = WebDriverWait(driver, 30)
+    current_window = None
     try:
-        target_url = "https://wsp.flowscape.se/webapp/"
+        logging.info("Opening target URL")
+        target_url = os.getenv("FLOWSCAPE_URL") or "https://wsp.flowscape.se/webapp/"
         driver.get(target_url)
-        wait = WebDriverWait(driver, 30)
+        current_window = driver.current_window_handle
+        logging.info("Opened %s (handle=%s)", target_url, current_window)
+        _dump_page_state(driver, "after_open")
+    except Exception as e:
+        _log_exception("open_page", e, driver)
+        return False
 
-        # 1. Click "Sign in with Microsoft"
+    # 1. Click "Sign in with Microsoft"
+    try:
+        logging.info("Waiting for Microsoft sign-in button")
         microsoft_btn = wait.until(
             EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'Microsoft') or contains(., 'Sign in with Microsoft')]"))
         )
-        current_window = driver.current_window_handle
+        logging.info("Clicking Microsoft sign-in button")
         microsoft_btn.click()
-
-        # If a new window opens for Microsoft login, switch to it
-        try:
-            wait.until(lambda d: len(d.window_handles) > 1)
-            for handle in driver.window_handles:
-                if handle != current_window:
-                    driver.switch_to.window(handle)
-                    print("Switched to Microsoft login window")
-                    break
-        except Exception:
-            print("No extra window opened for Microsoft login")
-
+        logging.debug("Clicked Microsoft sign-in")
     except Exception as e:
-        print(f"Booking failed while opening page or clicking Microsoft sign-in: {e}")
-        _safe_screenshot(driver, "layout_error_open.png")
+        _log_exception("click_microsoft", e, driver)
         return False
 
+    # handle potential new window
+    try:
+        logging.info("Checking for new login window")
+        WebDriverWait(driver, 5).until(lambda d: len(d.window_handles) > 1)
+        for handle in driver.window_handles:
+            if handle != current_window:
+                driver.switch_to.window(handle)
+                logging.info("Switched to login window: %s", handle)
+                break
+    except Exception:
+        logging.info("No new login window detected; continuing in same window")
+
+    # Credentials
     USERNAME = email or os.getenv("FLOWSCAPE_USER")
     PASSWORD = password or os.getenv("FLOWSCAPE_PASS")
+    logging.debug("Using username from env present=%s", bool(USERNAME))
 
     try:
-        # Microsoft sign-in
+        # Enter email
+        logging.info("Filling email")
         email_field = WebDriverWait(driver, 30).until(EC.presence_of_element_located((By.NAME, "loginfmt")))
         email_field.clear()
         email_field.send_keys(USERNAME)
         driver.find_element(By.ID, "idSIButton9").click()
+        logging.debug("Email entered and next clicked")
+    except Exception as e:
+        _log_exception("enter_email", e, driver)
+        return False
 
+    try:
+        logging.info("Filling password")
         password_field = WebDriverWait(driver, 30).until(EC.element_to_be_clickable((By.NAME, "passwd")))
         password_field.clear()
         password_field.send_keys(PASSWORD)
         WebDriverWait(driver, 30).until(EC.element_to_be_clickable((By.ID, "idSIButton9"))).click()
+        logging.debug("Password entered and signed in")
+    except Exception as e:
+        _log_exception("enter_password", e, driver)
+        return False
 
-        # optional MS prompts
-        try:
-            time.sleep(1)
-            for btn_id in ("idBtn_Back", "idBtn_Accept", "idSIButton9"):
-                try:
-                    btn = WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.ID, btn_id)))
-                    btn.click()
-                    print(f"Clicked optional MS prompt button: {btn_id}")
-                    break
-                except Exception:
-                    continue
-        except Exception:
-            pass
+    # handle optional MS prompts
+    try:
+        logging.info("Handling optional MS prompts (if any)")
+        time.sleep(1)
+        for btn_id in ("idBtn_Back", "idBtn_Accept", "idSIButton9"):
+            try:
+                btn = WebDriverWait(driver, 3).until(EC.element_to_be_clickable((By.ID, btn_id)))
+                btn.click()
+                logging.info("Clicked MS optional button %s", btn_id)
+                break
+            except Exception:
+                continue
+    except Exception:
+        logging.debug("No optional MS prompt handled")
 
-        # switch back to main flowscape window if possible
-        try:
-            main_handle = None
-            for handle in driver.window_handles:
+    # switch back to flowscape main window
+    try:
+        logging.info("Switching back to main Flowscape window")
+        main_handle = None
+        for handle in driver.window_handles:
+            try:
                 driver.switch_to.window(handle)
                 if "flowscape" in driver.current_url:
                     main_handle = handle
                     break
-            if main_handle:
-                driver.switch_to.window(main_handle)
-            else:
-                driver.switch_to.window(driver.window_handles[0])
-        except Exception:
-            pass
+            except Exception:
+                continue
+        if main_handle:
+            driver.switch_to.window(main_handle)
+            logging.info("Switched to main handle %s", main_handle)
+        else:
+            driver.switch_to.window(driver.window_handles[0])
+            logging.info("Switched to fallback handle %s", driver.current_window_handle)
+    except Exception as e:
+        logging.debug("Error while switching back to main app: %s", e)
 
-        # select seat
-        seat_identifier = "ID-6F-277 (UK)"
+    # find and click seat
+    try:
+        logging.info("Locating seat: %s", seat_identifier)
         xpath_exact = f"//*[@aria-label=\"{seat_identifier}\" or @title=\"{seat_identifier}\"]"
         xpath_contains = f"//*[contains(@aria-label, \"{seat_identifier.split()[0]}\") or contains(@title, \"{seat_identifier.split()[0]}\")]"
-
         my_seat = None
         try:
-            my_seat = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.XPATH, xpath_exact)))
-            print(f"Found seat with exact match: {seat_identifier}")
+            my_seat = WebDriverWait(driver, 15).until(EC.element_to_be_clickable((By.XPATH, xpath_exact)))
+            logging.info("Found exact seat element")
         except Exception:
-            print("Exact match not found; trying contains() fallback")
+            logging.info("Exact seat not found; trying contains fallback")
             candidates = driver.find_elements(By.XPATH, xpath_contains)
             for c in candidates:
                 try:
@@ -281,180 +283,229 @@ def login_flowscape(driver, email=None, password=None, debug=False):
                         break
                 except Exception:
                     continue
-
         if not my_seat:
-            print("Could not locate the seat element on the page.")
-            _safe_screenshot(driver, "seat_not_found.png")
+            logging.error("Seat element not found - dumping page and returning")
+            _dump_page_state(driver, "seat_not_found")
             return False
 
-        try:
-            driver.execute_script("arguments[0].scrollIntoView({block: 'center'})", my_seat)
-        except Exception:
-            pass
-        try:
-            driver.execute_script("arguments[0].click();", my_seat)
-        except Exception as e:
-            print(f"JS click failed on seat element, trying ActionChains click: {e}")
-            try:
-                from selenium.webdriver import ActionChains
-                ActionChains(driver).move_to_element(my_seat).click().perform()
-            except Exception as e2:
-                print(f"ActionChains click also failed: {e2}")
-                _safe_screenshot(driver, "seat_click_failed.png")
-                return False
+        logging.info("Clicking seat element")
+        driver.execute_script("arguments[0].scrollIntoView({block: 'center'})", my_seat)
+        driver.execute_script("arguments[0].click();", my_seat)
+        _dump_page_state(driver, "after_seat_click")
+    except Exception as e:
+        _log_exception("click_seat", e, driver)
+        return False
 
-        print(f"Clicked seat: {seat_identifier}")
-        if debug:
-            _safe_screenshot(driver, "after_seat_click.png")
-            time.sleep(0.5)
-
-        # detect popup/modal or new window
-        popup_handle_switched = False
-        popup_window_handle = None
+    # detect popup/modal or new window for booking and fill Start/End times
+    popup_handle_switched = False
+    iframe_switched = False
+    modal = None
+    try:
+        logging.info("Detecting booking popup/modal or window")
+        # short time to allow popup window to appear
         try:
             WebDriverWait(driver, 3).until(lambda d: len(d.window_handles) > 1)
             for handle in driver.window_handles:
                 if handle != driver.current_window_handle:
-                    popup_window_handle = handle
-                    driver.switch_to.window(popup_window_handle)
                     popup_handle_switched = True
-                    print("Switched to popup window for booking")
+                    driver.switch_to.window(handle)
+                    logging.info("Switched to popup window: %s", handle)
                     break
         except Exception:
-            print("No separate popup window detected; expecting an in-page modal/dialog")
+            logging.debug("No separate popup window detected")
 
-        modal = None
+        # try to find modal
         try:
             modal = WebDriverWait(driver, 8).until(
-                EC.presence_of_element_located(
-                    (By.XPATH, "//*[@role='dialog' or @aria-modal='true' or contains(@class,'modal') or contains(@class,'Dialog') or contains(@class,'popup')]")
-                )
+                EC.presence_of_element_located((By.XPATH, "//*[@role='dialog' or @aria-modal='true' or contains(@class,'modal') or contains(@class,'Dialog') or contains(@class,'popup')]"))
             )
-            print("Found modal/dialog container for booking popup")
+            logging.info("Found modal element for booking")
         except Exception:
-            print("Modal container not detected by role/class heuristics; will attempt to find inputs globally")
+            logging.debug("Modal not detected by role/class heuristics")
 
-        # If modal contains an iframe, switch into it
-        iframe_switched = False
+        # if modal contains iframe, switch into it
         try:
             if modal is not None:
                 iframes = modal.find_elements(By.TAG_NAME, "iframe")
                 if iframes:
-                    # switch to first iframe
                     driver.switch_to.frame(iframes[0])
                     iframe_switched = True
-                    print("Switched into iframe inside modal")
+                    logging.info("Switched into iframe inside modal")
         except Exception:
-            pass
+            logging.debug("No iframe inside modal or switching failed")
 
-        # Dump debug info if requested
-        if debug:
-            _dump_modal_state(driver, modal if not iframe_switched else None, prefix="debug")
+        # dump state now
+        _dump_page_state(driver, "popup_detected")
+    except Exception as e:
+        _log_exception("detect_popup", e, driver)
+        return False
 
-        # find start/end inputs
+    # locate time inputs
+    try:
         inputs = _find_time_input_within(driver, modal if not iframe_switched else None)
         if not inputs["start"] or not inputs["end"]:
-            # try global search (and also try when inside iframe we switched)
+            logging.info("Primary selectors didn't find start/end; trying global search")
             inputs = _find_time_input_within(driver, None)
 
         if not inputs["start"] or not inputs["end"]:
-            print("Failed to find start and/or end input fields in popup.")
-            _safe_screenshot(driver, "time_inputs_not_found.png")
-            # restore frames / windows
-            try:
-                if iframe_switched:
-                    driver.switch_to.default_content()
-                if popup_handle_switched:
-                    driver.close()
-                    driver.switch_to.window(current_window)
-            except Exception:
-                pass
-            return False
-
-        # set start/end values
-        start_ok = _set_input_value(driver, inputs["start"], "08:00")
-        end_ok = _set_input_value(driver, inputs["end"], "18:00")
-        if not (start_ok and end_ok):
-            print("Failed to set start/end values on inputs.")
-            _safe_screenshot(driver, "set_time_failed.png")
-            try:
-                if iframe_switched:
-                    driver.switch_to.default_content()
-                if popup_handle_switched:
-                    driver.close()
-                    driver.switch_to.window(current_window)
-            except Exception:
-                pass
-            return False
-
-        print("Filled Start=08:00 and End=18:00")
-        if debug:
-            _safe_screenshot(driver, "after_setting_times.png")
-
-        # find and click Book button (prefer inside modal)
-        book_clicked = False
-        try:
-            book_btn_candidates = []
-            if modal is not None and not iframe_switched:
-                book_btn_candidates = modal.find_elements(By.XPATH, ".//button[contains(., 'Book') or contains(., 'BOOK') or contains(., 'Book now') or contains(., 'Confirm') or contains(., 'OK') or contains(., 'Ok') or contains(., 'Yes')]")
-            if not book_btn_candidates:
-                book_btn_candidates = driver.find_elements(By.XPATH, "//button[contains(., 'Book') or contains(., 'BOOK') or contains(., 'Book now') or contains(., 'Confirm') or contains(., 'OK') or contains(., 'Ok') or contains(., 'Yes')]")
-            for btn in book_btn_candidates:
-                try:
-                    if btn.is_displayed() and btn.is_enabled():
-                        driver.execute_script("arguments[0].scrollIntoView({block: 'center'})", btn)
-                        driver.execute_script("arguments[0].click();", btn)
-                        book_clicked = True
-                        print("Clicked Book/Confirm button in popup")
-                        break
-                except Exception:
-                    continue
-        except Exception as e:
-            print(f"Error while attempting to find/click Book button: {e}")
-
-        if not book_clicked:
-            print("Could not click the Book button in popup.")
-            _safe_screenshot(driver, "book_button_not_clicked.png")
-            try:
-                if iframe_switched:
-                    driver.switch_to.default_content()
-                if popup_handle_switched:
-                    driver.close()
-                    driver.switch_to.window(current_window)
-            except Exception:
-                pass
-            return False
-
-        # restore iframe/window
-        try:
+            logging.error("Start/end inputs not found - dumping and returning")
+            _dump_page_state(driver, "time_inputs_not_found")
+            # restore contexts
             if iframe_switched:
                 driver.switch_to.default_content()
             if popup_handle_switched:
-                time.sleep(1)
                 try:
                     driver.close()
                 except Exception:
                     pass
                 driver.switch_to.window(current_window)
+            return False
+
+        logging.info("Setting start/end times")
+        if not _set_input_value(driver, inputs["start"], "08:00") or not _set_input_value(driver, inputs["end"], "18:00"):
+            logging.error("Failed to set start/end values")
+            _dump_page_state(driver, "set_time_failed")
+            if iframe_switched:
+                driver.switch_to.default_content()
+            if popup_handle_switched:
+                try:
+                    driver.close()
+                except Exception:
+                    pass
+                driver.switch_to.window(current_window)
+            return False
+        _dump_page_state(driver, "after_setting_times")
+    except Exception as e:
+        _log_exception("set_times", e, driver)
+        return False
+
+    # click Book button
+    try:
+        logging.info("Attempting to click Book/Confirm button")
+        book_btn_candidates = []
+        if modal is not None and not iframe_switched:
+            book_btn_candidates = modal.find_elements(By.XPATH, ".//button[contains(., 'Book') or contains(., 'BOOK') or contains(., 'Book now') or contains(., 'Confirm') or contains(., 'OK') or contains(., 'Ok') or contains(., 'Yes')]")
+        if not book_btn_candidates:
+            book_btn_candidates = driver.find_elements(By.XPATH, "//button[contains(., 'Book') or contains(., 'BOOK') or contains(., 'Book now') or contains(., 'Confirm') or contains(., 'OK') or contains(., 'Ok') or contains(., 'Yes')]")
+
+        clicked = False
+        for btn in book_btn_candidates:
+            try:
+                if btn.is_displayed() and btn.is_enabled():
+                    driver.execute_script("arguments[0].scrollIntoView({block: 'center'})", btn)
+                    driver.execute_script("arguments[0].click();", btn)
+                    clicked = True
+                    logging.info("Clicked a Book/Confirm button candidate")
+                    break
+            except Exception:
+                continue
+
+        if not clicked:
+            logging.error("Could not find or click the Book button")
+            _dump_page_state(driver, "book_button_not_clicked")
+            if iframe_switched:
+                driver.switch_to.default_content()
+            if popup_handle_switched:
+                try:
+                    driver.close()
+                except Exception:
+                    pass
+                driver.switch_to.window(current_window)
+            return False
+    except Exception as e:
+        _log_exception("click_book", e, driver)
+        return False
+
+    # restore contexts and wait for confirmation
+    try:
+        if iframe_switched:
+            driver.switch_to.default_content()
+        if popup_handle_switched:
+            time.sleep(1)
+            try:
+                driver.close()
+            except Exception:
+                pass
+            driver.switch_to.window(current_window)
+    except Exception:
+        logging.debug("Failed restoring windows/frames after clicking Book")
+
+    try:
+        logging.info("Waiting for booking confirmation indicator")
+        success_xpath = "//*[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'confirmed') or contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'booked') or contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'success') or contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'reservation')]"
+        WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.XPATH, success_xpath)))
+        logging.info("Booking appears successful (confirmation found)")
+        _dump_page_state(driver, "booking_success")
+        return True
+    except Exception:
+        logging.warning("No explicit confirmation found after booking click. Dumping final state.")
+        _dump_page_state(driver, "booking_no_confirmation")
+        return False
+
+
+def make_driver(headless=True, enable_console_logs=True):
+    """
+    Create a Chrome WebDriver with optional browser console logging enabled.
+    """
+    options = webdriver.ChromeOptions()
+    if headless:
+        options.add_argument("--headless=new")
+        options.add_argument("--disable-gpu")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    # Ensure window-size so screenshots look consistent
+    options.add_argument("--window-size=1920,1080")
+
+    caps = webdriver.DesiredCapabilities.CHROME.copy()
+    if enable_console_logs:
+        caps["goog:loggingPrefs"] = {"browser": "ALL"}
+    try:
+        driver = webdriver.Chrome(desired_capabilities=caps, options=options)
+        logging.info("Launched Chrome WebDriver (headless=%s)", headless)
+        return driver
+    except WebDriverException as e:
+        logging.exception("Failed to launch Chrome WebDriver: %s", e)
+        raise
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Flowscape seat booker with verbose logging")
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging and save debug artifacts")
+    parser.add_argument("--headless", action="store_true", help="Run Chrome in headless mode (default: env HEADLESS or True)")
+    parser.add_argument("--seat", type=str, default=os.getenv("FLOWSCAPE_SEAT", "ID-6F-277 (UK)"), help="Seat identifier to book")
+    args = parser.parse_args()
+
+    debug = args.debug or os.getenv("FLOWSCAPE_DEBUG", "1") == "1"
+    # default headless True unless explicitly set
+    headless_env = os.getenv("HEADLESS")
+    if headless_env is not None:
+        headless = headless_env.lower() not in ("0", "false", "no")
+    else:
+        headless = True if not args.headless else True
+
+    setup_logging(debug)
+
+    driver = None
+    try:
+        driver = make_driver(headless=headless, enable_console_logs=True)
+        success = login_flowscape(driver, email=None, password=None, seat_identifier=args.seat, debug=debug)
+        if success:
+            logging.info("Seat booking flow completed: SUCCESS")
+            sys.exit(0)
+        else:
+            logging.error("Seat booking flow completed: FAILURE")
+            sys.exit(2)
+    except Exception as e:
+        logging.exception("Unhandled exception in main: %s", e)
+        _dump_page_state(driver, "fatal_error") if driver is not None else None
+        sys.exit(3)
+    finally:
+        try:
+            if driver:
+                driver.quit()
         except Exception:
             pass
 
-        # wait for booking confirmation
-        try:
-            success_xpath = "//*[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'confirmed') or contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'booked') or contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'success') or contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'reservation')]"
-            WebDriverWait(driver, 12).until(EC.presence_of_element_located((By.XPATH, success_xpath)))
-            print("Booking appears to be successful (found confirmation text).")
-            _safe_screenshot(driver, "booking_success.png")
-            return True
-        except Exception:
-            print("No obvious confirmation text found after clicking book. Check debug files for details.")
-            _safe_screenshot(driver, "booking_no_confirmation.png")
-            if debug:
-                # final dump to help debugging
-                _dump_modal_state(driver, None, prefix="debug_final")
-            return False
 
-    except Exception as e:
-        print(f"Failed during login/booking flow: {e}\n{traceback.format_exc()}")
-        _safe_screenshot(driver, "layout_error.png")
-        return False
+if __name__ == "__main__":
+    main()
