@@ -11,6 +11,7 @@ jobs:
     container:
       image: selenium/standalone-chrome:latest
       options: --user root
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -20,19 +21,19 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install Python dependencies
+      - name: Install Python deps (use same python)
         run: |
           python -m pip install --upgrade pip
-          # If you maintain requirements.txt, uncomment next line:
-          # if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          pip install selenium
+          python -m pip install selenium
+          # if you have requirements.txt:
+          # python -m pip install -r requirements.txt
 
-      - name: Verify selenium installed
+      - name: Verify python & selenium
         run: |
+          python -c "import sys,site; print('python:', sys.executable); print('sys.path:', site.getsitepackages() if hasattr(site,'getsitepackages') else sys.path[:5])"
           python -c "import selenium; print('selenium', selenium.__version__)"
-          python -c "import sys; print('python', sys.executable)"
 
-      - name: Run booking script (always continue to upload artifacts)
+      - name: Run booking script
         env:
           FLOWSCAPE_USER: ${{ secrets.FLOWSCAPE_USER }}
           FLOWSCAPE_PASS: ${{ secrets.FLOWSCAPE_PASS }}
@@ -40,7 +41,7 @@ jobs:
         run: |
           python book_seat.py --debug || true
 
-      - name: Upload debug artifacts
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: flowscape-debug-artifacts
@@ -48,5 +49,4 @@ jobs:
             booking.log
             *.png
             *.html
-            *_browser_console.log
             *_browser_console.log
