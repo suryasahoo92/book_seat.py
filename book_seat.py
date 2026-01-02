@@ -3,6 +3,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import os
 import time
+import traceback
 
 
 def _safe_screenshot(driver, name):
@@ -13,9 +14,18 @@ def _safe_screenshot(driver, name):
         pass
 
 
+def _write_file(name, content):
+    try:
+        with open(name, "w", encoding="utf-8") as f:
+            f.write(content)
+        print(f"Wrote file: {name}")
+    except Exception as e:
+        print(f"Failed writing file {name}: {e}")
+
+
 def _set_input_value(driver, element, value):
     """
-    Robustly set value for an input element: try clear/send_keys, fall back to JS value set + events.
+    Robustly set value for an input element: try clear/send_keys, fall back to JS value set + events, then blur.
     """
     try:
         element.clear()
@@ -23,19 +33,91 @@ def _set_input_value(driver, element, value):
         pass
     try:
         element.send_keys(value)
+        # some inputs require Enter to commit
+        try:
+            element.send_keys("\n")
+        except Exception:
+            pass
         return True
     except Exception:
+        pass
+
+    # JS fallback: set value and dispatch input/change/blur events
+    try:
+        driver.execute_script(
+            "arguments[0].value = arguments[1];"
+            "arguments[0].dispatchEvent(new Event('input', { bubbles: true }));"
+            "arguments[0].dispatchEvent(new Event('change', { bubbles: true }));"
+            "arguments[0].dispatchEvent(new Event('blur', { bubbles: true }));",
+            element,
+            value,
+        )
+        return True
+    except Exception:
+        return False
+
+
+def _dump_modal_state(driver, modal, prefix="debug"):
+    """
+    Save modal outerHTML, page source, list of candidate inputs/buttons and their attributes.
+    """
+    try:
+        # full page after seat click
         try:
-            driver.execute_script(
-                "arguments[0].value = arguments[1]; "
-                "arguments[0].dispatchEvent(new Event('input', { bubbles: true })); "
-                "arguments[0].dispatchEvent(new Event('change', { bubbles: true }));",
-                element,
-                value,
-            )
-            return True
+            page_source = driver.page_source
+            _write_file(f"{prefix}_page_after_click.html", page_source)
         except Exception:
-            return False
+            pass
+
+        # outerHTML of modal if present
+        if modal is not None:
+            try:
+                outer = driver.execute_script("return arguments[0].outerHTML;", modal)
+                _write_file(f"{prefix}_modal.html", outer)
+            except Exception:
+                pass
+
+        # list candidate inputs/buttons in modal or globally
+        lines = []
+        lines.append(f"Window handles: {driver.window_handles}\nCurrent URL: {driver.current_url}\n")
+        try:
+            # find inputs and buttons near modal
+            elems = []
+            if modal is not None:
+                elems = modal.find_elements(By.XPATH, ".//input | .//button | .//div | .//span | .//label")
+            else:
+                elems = driver.find_elements(By.XPATH, "//input | //button | //div | //span | //label")
+
+            # limit amount
+            for i, e in enumerate(elems[:400]):
+                try:
+                    tag = e.tag_name
+                    text = e.text or ""
+                    aria = e.get_attribute("aria-label") or ""
+                    role = e.get_attribute("role") or ""
+                    cls = e.get_attribute("class") or ""
+                    idattr = e.get_attribute("id") or ""
+                    name = e.get_attribute("name") or ""
+                    placeholder = e.get_attribute("placeholder") or ""
+                    value = e.get_attribute("value") or ""
+                    displayed = e.is_displayed()
+                    enabled = e.is_enabled()
+                    outer = ""
+                    try:
+                        outer = driver.execute_script("return arguments[0].outerHTML;", e)
+                    except Exception:
+                        pass
+                    lines.append(
+                        f"#{i} tag={tag} displayed={displayed} enabled={enabled} text={text!r} aria={aria!r} role={role!r} id={idattr!r} name={name!r} class={cls!r} placeholder={placeholder!r} value={value!r}\nouterHTML={outer[:4000]}\n---\n"
+                    )
+                except Exception:
+                    continue
+        except Exception as e:
+            lines.append("Failed enumerating elements: " + str(e) + "\n" + traceback.format_exc())
+
+        _write_file(f"{prefix}_elements.txt", "\n".join(lines))
+    except Exception as e:
+        print("Error during modal dump: ", e)
 
 
 def _find_time_input_within(driver, container):
@@ -44,31 +126,21 @@ def _find_time_input_within(driver, container):
     Tries several common selectors (aria-label, placeholder, label text, input[type=time]).
     """
     result = {"start": None, "end": None}
-    candidates = []
-
-    # Prepare relative xpaths from container if provided else global
     base = "." if container is not None else ""
-
-    # Possible xpaths for start
     start_xpaths = [
         f"{base}//input[@type='time' and (contains(translate(@aria-label, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'start') or contains(translate(@placeholder, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'start'))]",
         f"{base}//input[(contains(translate(@aria-label, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'start') or contains(translate(@placeholder, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'start') or contains(translate(@name, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'start'))]",
         f"{base}//label[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'start')]/following::input[1]",
     ]
-
     end_xpaths = [
         f"{base}//input[@type='time' and (contains(translate(@aria-label, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'end') or contains(translate(@placeholder, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'end'))]",
         f"{base}//input[(contains(translate(@aria-label, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'end') or contains(translate(@placeholder, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'end') or contains(translate(@name, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'end'))]",
         f"{base}//label[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'end')]/following::input[1]",
     ]
 
-    # Try each variant inside container (if container provided use find_elements with context)
     for xp in start_xpaths:
         try:
-            if container is not None:
-                elems = container.find_elements(By.XPATH, xp)
-            else:
-                elems = driver.find_elements(By.XPATH, xp)
+            elems = container.find_elements(By.XPATH, xp) if container is not None else driver.find_elements(By.XPATH, xp)
             if elems:
                 result["start"] = elems[0]
                 break
@@ -77,29 +149,25 @@ def _find_time_input_within(driver, container):
 
     for xp in end_xpaths:
         try:
-            if container is not None:
-                elems = container.find_elements(By.XPATH, xp)
-            else:
-                elems = driver.find_elements(By.XPATH, xp)
+            elems = container.find_elements(By.XPATH, xp) if container is not None else driver.find_elements(By.XPATH, xp)
             if elems:
                 result["end"] = elems[0]
                 break
         except Exception:
             continue
 
-    # As a last resort, try to pick the first two time inputs (start, end)
-    if (not result["start"] or not result["end"]) and container is not None:
-        try:
+    # fallback: pick first two inputs[type=time]
+    try:
+        if (not result["start"] or not result["end"]) and container is not None:
             time_inputs = container.find_elements(By.XPATH, ".//input[@type='time']")
             if len(time_inputs) >= 2:
                 if not result["start"]:
                     result["start"] = time_inputs[0]
                 if not result["end"]:
                     result["end"] = time_inputs[1]
-        except Exception:
-            pass
+    except Exception:
+        pass
 
-    # Global fallback (no container)
     if (not result["start"] or not result["end"]) and container is None:
         try:
             time_inputs = driver.find_elements(By.XPATH, "//input[@type='time']")
@@ -114,14 +182,14 @@ def _find_time_input_within(driver, container):
     return result
 
 
-def login_flowscape(driver, email=None, password=None):
+def login_flowscape(driver, email=None, password=None, debug=False):
     """
     Logs into Flowscape via Microsoft and attempts to book a seat.
     If email/password are not provided, falls back to FLOWSCAPE_USER and FLOWSCAPE_PASS environment variables.
+    Set debug=True to produce detailed dumps (modal.html, page_after_click.html, elements.txt and screenshots).
     Returns True on success, False on failure.
     """
     try:
-        # --- PUT YOUR URL HERE ---
         target_url = "https://wsp.flowscape.se/webapp/"
         driver.get(target_url)
         wait = WebDriverWait(driver, 30)
@@ -142,7 +210,6 @@ def login_flowscape(driver, email=None, password=None):
                     print("Switched to Microsoft login window")
                     break
         except Exception:
-            # no new window — continue in same window
             print("No extra window opened for Microsoft login")
 
     except Exception as e:
@@ -150,28 +217,22 @@ def login_flowscape(driver, email=None, password=None):
         _safe_screenshot(driver, "layout_error_open.png")
         return False
 
-    # Credentials stored as GitHub Action Secrets or passed as args
     USERNAME = email or os.getenv("FLOWSCAPE_USER")
     PASSWORD = password or os.getenv("FLOWSCAPE_PASS")
 
     try:
-        # 2. Enter Microsoft Email
+        # Microsoft sign-in
         email_field = WebDriverWait(driver, 30).until(EC.presence_of_element_located((By.NAME, "loginfmt")))
         email_field.clear()
         email_field.send_keys(USERNAME)
-        # Click Next (idSIButton9 is commonly the MS "Next/Sign in" button)
         driver.find_element(By.ID, "idSIButton9").click()
 
-        # 3. Enter Microsoft Password
-        # Sometimes there is a delay while it redirects to your company's login page
         password_field = WebDriverWait(driver, 30).until(EC.element_to_be_clickable((By.NAME, "passwd")))
         password_field.clear()
         password_field.send_keys(PASSWORD)
-
-        # 4. Click "Sign in"
         WebDriverWait(driver, 30).until(EC.element_to_be_clickable((By.ID, "idSIButton9"))).click()
 
-        # 4b. Handle optional "Stay signed in?" dialog or other MS prompts
+        # optional MS prompts
         try:
             time.sleep(1)
             for btn_id in ("idBtn_Back", "idBtn_Accept", "idSIButton9"):
@@ -185,7 +246,7 @@ def login_flowscape(driver, email=None, password=None):
         except Exception:
             pass
 
-        # After login flows, switch back to main app window if needed
+        # switch back to main flowscape window if possible
         try:
             main_handle = None
             for handle in driver.window_handles:
@@ -200,10 +261,8 @@ def login_flowscape(driver, email=None, password=None):
         except Exception:
             pass
 
-        # 5. Handle seat selection and confirmation
+        # select seat
         seat_identifier = "ID-6F-277 (UK)"
-
-        # Try to find exact match first, else try contains
         xpath_exact = f"//*[@aria-label=\"{seat_identifier}\" or @title=\"{seat_identifier}\"]"
         xpath_contains = f"//*[contains(@aria-label, \"{seat_identifier.split()[0]}\") or contains(@title, \"{seat_identifier.split()[0]}\")]"
 
@@ -212,7 +271,6 @@ def login_flowscape(driver, email=None, password=None):
             my_seat = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.XPATH, xpath_exact)))
             print(f"Found seat with exact match: {seat_identifier}")
         except Exception:
-            # fallback to contains match and try multiple candidates
             print("Exact match not found; trying contains() fallback")
             candidates = driver.find_elements(By.XPATH, xpath_contains)
             for c in candidates:
@@ -229,7 +287,6 @@ def login_flowscape(driver, email=None, password=None):
             _safe_screenshot(driver, "seat_not_found.png")
             return False
 
-        # Ensure seat is visible & clickable; use JS click to bypass overlay issues
         try:
             driver.execute_script("arguments[0].scrollIntoView({block: 'center'})", my_seat)
         except Exception:
@@ -247,13 +304,13 @@ def login_flowscape(driver, email=None, password=None):
                 return False
 
         print(f"Clicked seat: {seat_identifier}")
+        if debug:
+            _safe_screenshot(driver, "after_seat_click.png")
+            time.sleep(0.5)
 
-        # 5b. After clicking the seat, a popup/modal appears where Start and End times must be entered.
-        # That popup could be a modal in DOM or a new window. Handle both.
-
+        # detect popup/modal or new window
         popup_handle_switched = False
         popup_window_handle = None
-        # Short wait to detect a new window
         try:
             WebDriverWait(driver, 3).until(lambda d: len(d.window_handles) > 1)
             for handle in driver.window_handles:
@@ -264,10 +321,8 @@ def login_flowscape(driver, email=None, password=None):
                     print("Switched to popup window for booking")
                     break
         except Exception:
-            # No new window — treat as modal in same window
             print("No separate popup window detected; expecting an in-page modal/dialog")
 
-        # Now locate the popup/modal container if present (role=dialog or aria-modal)
         modal = None
         try:
             modal = WebDriverWait(driver, 8).until(
@@ -279,19 +334,36 @@ def login_flowscape(driver, email=None, password=None):
         except Exception:
             print("Modal container not detected by role/class heuristics; will attempt to find inputs globally")
 
-        # Try to find start/end inputs within modal (if found) else globally
-        inputs = _find_time_input_within(driver, modal)
+        # If modal contains an iframe, switch into it
+        iframe_switched = False
+        try:
+            if modal is not None:
+                iframes = modal.find_elements(By.TAG_NAME, "iframe")
+                if iframes:
+                    # switch to first iframe
+                    driver.switch_to.frame(iframes[0])
+                    iframe_switched = True
+                    print("Switched into iframe inside modal")
+        except Exception:
+            pass
 
+        # Dump debug info if requested
+        if debug:
+            _dump_modal_state(driver, modal if not iframe_switched else None, prefix="debug")
+
+        # find start/end inputs
+        inputs = _find_time_input_within(driver, modal if not iframe_switched else None)
         if not inputs["start"] or not inputs["end"]:
-            print("Could not find both start/end inputs using primary selectors. Will attempt broader search.")
-            # Try global search
+            # try global search (and also try when inside iframe we switched)
             inputs = _find_time_input_within(driver, None)
 
         if not inputs["start"] or not inputs["end"]:
             print("Failed to find start and/or end input fields in popup.")
             _safe_screenshot(driver, "time_inputs_not_found.png")
-            # If we switched to a popup window, try switching back before returning
+            # restore frames / windows
             try:
+                if iframe_switched:
+                    driver.switch_to.default_content()
                 if popup_handle_switched:
                     driver.close()
                     driver.switch_to.window(current_window)
@@ -299,13 +371,15 @@ def login_flowscape(driver, email=None, password=None):
                 pass
             return False
 
-        # Fill times
+        # set start/end values
         start_ok = _set_input_value(driver, inputs["start"], "08:00")
         end_ok = _set_input_value(driver, inputs["end"], "18:00")
         if not (start_ok and end_ok):
             print("Failed to set start/end values on inputs.")
             _safe_screenshot(driver, "set_time_failed.png")
             try:
+                if iframe_switched:
+                    driver.switch_to.default_content()
                 if popup_handle_switched:
                     driver.close()
                     driver.switch_to.window(current_window)
@@ -314,14 +388,15 @@ def login_flowscape(driver, email=None, password=None):
             return False
 
         print("Filled Start=08:00 and End=18:00")
+        if debug:
+            _safe_screenshot(driver, "after_setting_times.png")
 
-        # Click the "Book" button inside the modal or popup window
+        # find and click Book button (prefer inside modal)
         book_clicked = False
-        book_btn_candidates = []
         try:
-            # Prefer searching inside modal if present
-            if modal is not None:
-                book_btn_candidates = modal.find_elements(By.XPATH, ".//button[contains(., 'Book') or contains(., 'BOOK') or contains(., 'Book now') or contains(., 'Book Now') or contains(., 'Confirm') or contains(., 'Book') ]")
+            book_btn_candidates = []
+            if modal is not None and not iframe_switched:
+                book_btn_candidates = modal.find_elements(By.XPATH, ".//button[contains(., 'Book') or contains(., 'BOOK') or contains(., 'Book now') or contains(., 'Confirm') or contains(., 'OK') or contains(., 'Ok') or contains(., 'Yes')]")
             if not book_btn_candidates:
                 book_btn_candidates = driver.find_elements(By.XPATH, "//button[contains(., 'Book') or contains(., 'BOOK') or contains(., 'Book now') or contains(., 'Confirm') or contains(., 'OK') or contains(., 'Ok') or contains(., 'Yes')]")
             for btn in book_btn_candidates:
@@ -341,6 +416,8 @@ def login_flowscape(driver, email=None, password=None):
             print("Could not click the Book button in popup.")
             _safe_screenshot(driver, "book_button_not_clicked.png")
             try:
+                if iframe_switched:
+                    driver.switch_to.default_content()
                 if popup_handle_switched:
                     driver.close()
                     driver.switch_to.window(current_window)
@@ -348,10 +425,11 @@ def login_flowscape(driver, email=None, password=None):
                 pass
             return False
 
-        # If the booking happened in a separate popup window, close it and switch back
+        # restore iframe/window
         try:
+            if iframe_switched:
+                driver.switch_to.default_content()
             if popup_handle_switched:
-                # give a moment for booking to process
                 time.sleep(1)
                 try:
                     driver.close()
@@ -361,7 +439,7 @@ def login_flowscape(driver, email=None, password=None):
         except Exception:
             pass
 
-        # Wait for a success/confirmation indicator in the main app
+        # wait for booking confirmation
         try:
             success_xpath = "//*[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'confirmed') or contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'booked') or contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'success') or contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'reservation')]"
             WebDriverWait(driver, 12).until(EC.presence_of_element_located((By.XPATH, success_xpath)))
@@ -369,11 +447,14 @@ def login_flowscape(driver, email=None, password=None):
             _safe_screenshot(driver, "booking_success.png")
             return True
         except Exception:
-            print("No obvious confirmation text found after clicking book. The booking might still have succeeded; check the UI.")
+            print("No obvious confirmation text found after clicking book. Check debug files for details.")
             _safe_screenshot(driver, "booking_no_confirmation.png")
+            if debug:
+                # final dump to help debugging
+                _dump_modal_state(driver, None, prefix="debug_final")
             return False
 
     except Exception as e:
-        print(f"Failed during login/booking flow: {e}")
+        print(f"Failed during login/booking flow: {e}\n{traceback.format_exc()}")
         _safe_screenshot(driver, "layout_error.png")
         return False
