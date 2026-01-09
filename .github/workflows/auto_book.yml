@@ -7,6 +7,7 @@ on:
 
 jobs:
   book-seat:
+    if: false
     runs-on: ubuntu-latest
     container:
       image: selenium/standalone-chrome:latest
